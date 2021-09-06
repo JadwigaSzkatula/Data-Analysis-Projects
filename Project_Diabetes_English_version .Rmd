@@ -1,0 +1,1033 @@
+---
+title: "Pima Indian Diabetes Data Analysis in R"
+author: "Jadwiga Szkatuła"
+date: "19 04 2021"
+output:
+  html_document: default
+  pdf_document: default
+subtitle: Classification and prediction of diabetes disease using machine learning
+  algorithms
+---
+
+```{r, echo=FALSE, warning=FALSE,message=FALSE}
+library(pROC)          # ROC curve i AUC
+library(rpart)         # decision trees
+library(rpart.plot)    # decision trees 2
+library (randomForest) # random forest
+library(ipred)         # bagging
+library (gbm)          # boosting
+library(dplyr)
+library(caret)
+library(corrplot)
+library(knitr)
+library(kableExtra)
+library(e1071)
+library(caret)
+library(ggpubr)
+library(ggplot2)
+library(outliers)
+library(kknn)
+library(naivebayes)
+library(randomForest)
+library("DALEX")
+```
+
+## Introduction
+
+$\qquad$ The aim of the project is to select the most effective classification method from among the selected Machine Learning techniques. Tuning the parameters will be carried out in Bagging. In the second part of the project the following models will be built on the training set:
+
+* KKNN Weighted k-nearest neighbors Classifier (for different numbers of neighbors)
+* Logit regression
+* Probit regression
+* Naive Bayes Classifier
+* Random forest (for different number of trees)
+
+The quality of their classification will be tested on the test set constituting 20% of all observations. Based on the accuracy score, the best classification model will be selected.
+
+$\qquad$ The calculations will be performed on the publicly available Prima Indians Diabetes dataset. It contains data on diabetes among 768 Indian women aged 21-81. The dataset was originally published by the National Institute of Diabetes and Digestive and Kidney Diseases.
+
+$\qquad$ In the sample group, there was a very high ratio of diabetes, as many as 268 cases, which is almost 35% of the entire set. This is a very high result, compared to only about 10% of adult women in Poland in 2018 diagnosed with diabetes.
+
+The dataset contains the binary variable 'Outcome' (1-diabetes, 0-no diabetes) and 8 health-related variables:
+
+* Past pregnancies
+* Blood pressure
+* Glucose level
+* The thickness of the skin fold of the triceps
+* Insulin level
+* BMI Index (Body Mass Index)
+* Family history of diabetes
+* Age
+
+
+```{r setup, include=FALSE, echo=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+
+setwd("C:/Users/szkat/Studia/Magisterskie/1rok/2sem/Uczenie Statystyczne w R/Projekt")
+diab <-read.csv("pima-indians-diabetes.csv", sep=",", header = F)
+colnames(diab) <- c('Pregnancies', 'Glucose', 'BloodPressure', 'SkinThickness', 
+                     'Insulin', 'BMI', 'Diab.Pedigree.Fun', 'Age', 'Outcome')
+
+#  Z 1990 roku National Institute of Diabetes and Digestive and Kidney Diseases
+
+var.name<-colnames(diab)
+
+variable.description <- c("Number of pregnancies",
+                          "Plasma glucose concentration after 2 hours in the oral glucose tolerance test",
+                          "Diastolic blood pressure", "Triceps skinfold thickness", "2-hour serum insulin (µU / ml)",
+                          "Body mass index (weight / (height ^ 2))", "Diabetes prevalence rate in relatives", "Age",
+                          "Does the person have diabetes?")
+```
+
+### Data Overview
+
+```{r,echo=FALSE}
+kable(head(diab),booktabs =T)%>%kable_styling(latex_options ="striped")
+summary_diab<-psych::describe(diab)[,c(3,4,5,8,9,10,11,12)]
+colnames(summary_diab)<-c("Mean", "Std Dev", "Median", "Min", "Max", "Range", "Skewness", "Kurtosis")
+kable(summary_diab,booktabs =T)%>%kable_styling(latex_options ="striped")
+
+
+```
+
+## Types and variables descriptions 
+
+```{r,echo=FALSE}
+variable.norm<-c(""," 70-140 mg/d l",
+                          "50-90 mm Hg", " ", "do 140 mU/ml, 140-199 it is pre-diabetes",
+                          "18,5–24,9", " ", " ", 
+                          " ")
+datadesc <- data.frame(cbind(var.name,variable.description, variable.norm))
+colnames(datadesc) <- c("Variable", "Description", "Norm")
+kable(datadesc,booktabs =T)%>%kable_styling(latex_options ="striped")
+```
+
+$\qquad$ The dataset contains multiple zero values. These are, in fact, missing data, as variables such as glucose, insulin and BMI cannot be zero. The variables Insulin and Glucose are the most deficient.
+
+```{r, echo=FALSE}
+c<-data.frame(colSums(diab == 0))
+colnames(c)<-c("Number of missing data")
+c<-t(c)
+
+kable(c,booktabs =T)%>%kable_styling(latex_options ="striped")
+
+diab$Insulin<-ifelse(diab$Insulin==0,NaN,diab$Insulin)
+diab$Glucose<-ifelse(diab$Glucose==0,NaN,diab$Glucose)
+diab$BloodPressure<-ifelse(diab$BloodPressure==0,NaN,diab$BloodPressure)
+diab$BMI<-ifelse(diab$BMI==0,NaN,diab$BMI)
+diab$SkinThickness<-ifelse(diab$SkinThickness==0,NaN,diab$SkinThickness)
+```
+
+$\qquad$ In the case of such large gaps in data in a small set, rows with gaps cannot be deleted due to too much data loss.
+It is always possible to replace the deficiencies with the mean or the median, but again in this case there are enough deficiencies to distort the results of later calculations. It would be reasonable to impute missing data by regression or the K-nearest neighbors method. In many studies where the authors found large gaps in data, these methods were often used instead of simply replacing the gaps with the mean or randomizing among the occurring values.
+
+### Correlations between variables
+
+```{r ,fig.align='center',echo=FALSE}
+cor_matrix<-cor(na.omit(diab))
+kable(cor_matrix,booktabs =T)%>%kable_styling(latex_options ="striped")
+corrplot(cor_matrix)
+```
+
+$\qquad$ Women with high glucose levels have a significantly increased risk of developing diabetes, so simply replacing the deficiencies in this variable would definitely worsen the classification results. In turn, the level of insulin and age also have the greatest influence on the result.
+
+$\qquad$ The original data also shows a correlation between BMI and diabetes. Obesity is one of the leading causes of type II diabetes. Interestingly, the spouses of overweight women also have an increased risk of developing diabetes, possibly because women are more likely than men to be responsible for running the household (including cooking and grocery shopping).
+There is also a strong positive correlation between the number of pregnancies and age in the data, but this was easy to predict. In the sample group, the maximum number of pregnancies is 17, which is quite an extreme number, but due to cultural aspects, this value may not be a mistake. 
+
+### KNN Missing-data imputation 
+
+$\qquad$ The K-nearest neighbors method can be used for both classification and imputation of missing data. In both cases the algorithm works in the same way, but for classification the obtained results should be rounded to zero or one. In the case of imputation, the algorithm estimates the missing value based on the remaining variables. In the multidimensional space, it is checked what values of an unknown variable are taken by a certain number of neighbors. In this case, the number of 10 closest neighbors was used. In order to improve the accuracy, it should be checked whether a different number of neighbors gives more accurate estimates (test based on complete observations).
+
+### The first lines after filling in the missing data
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+diab2<-diab
+preProcValues <- preProcess(diab2 %>% 
+                            select(Glucose, BloodPressure, Insulin, SkinThickness, BMI),
+                            method = c("knnImpute"),
+                            k = 10,
+                            knnSummary = mean)
+impute_diab2 <- predict(preProcValues, diab2,na.action = na.pass)
+procNames <- data.frame(col = names(preProcValues$mean), mean = preProcValues$mean, sd = preProcValues$std)
+for(i in procNames$col){
+  impute_diab2[i] <- impute_diab2[i]*preProcValues$std[i]+preProcValues$mean[i] 
+}
+
+kable(head(impute_diab2,10),booktabs =T)%>%kable_styling(latex_options ="striped")
+```
+
+### Box plots
+
+```{r ,fig.align='center',echo=FALSE,message=FALSE, warning=FALSE}
+
+g1<-ggplot(impute_diab2, aes(y=Pregnancies))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)
+
+g2<-ggplot(impute_diab2, aes(y=Glucose))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)
+
+g3<-ggplot(impute_diab2, aes(y=BloodPressure))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)
+
+g4<-ggplot(impute_diab2, aes(y=SkinThickness))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)
+
+ggarrange(g1, g2, g3 , g4,
+          ncol = 4, nrow = 1)
+
+g5<-ggplot(impute_diab2, aes(y=Insulin))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)
+
+g6<-ggplot(impute_diab2, aes(y=BMI))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)
+
+g7<-ggplot(impute_diab2, aes(y=Diab.Pedigree.Fun))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)
+
+g8<-ggplot(impute_diab2, aes(y=Age))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)
+
+
+ggarrange(g5, g6, g7 , g8,
+          ncol = 4, nrow = 1)
+```
+
+### Outliers
+
+$\qquad$ The Mahalanobis Distance will be used to identify multivariate outliers.
+It is a kind of distance between two points in multidimensional space that uses standard deviations for calculations.
+To find outliers using Mahalanobis distance, the distance between each point and the center in the n-dimensional data is calculated and the outliers are derived from these distances.
+5% of the data for which this distance is the greatest will be deleted.
+
+```{r, echo=FALSE}
+m_dist <- mahalanobis(impute_diab2[,c(1,3,4,5,6,7,8)], colMeans(impute_diab2[,c(1,3,4,5,6,7,8)]), cov(impute_diab2[,c(1,3,4,5,6,7,8)]))
+impute_diab2$m_dist <- round(m_dist, 2)
+impute_diab2$m_dist[m_dist>quantile(m_dist, probs = 0.95)]="Outlier"
+kable(head(impute_diab2,10),booktabs =T)%>%kable_styling(latex_options ="striped")
+
+impute_diab2<-impute_diab2 %>% 
+  filter(m_dist!="Outlier")
+
+```
+
+
+```{r ,fig.align='center',echo=FALSE,message=FALSE, warning=FALSE}
+
+g1<-ggplot(impute_diab2, aes(y=Pregnancies))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)
+
+g2<-ggplot(impute_diab2, aes(y=Glucose))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)
+
+g3<-ggplot(impute_diab2, aes(y=BloodPressure))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)
+
+g4<-ggplot(impute_diab2, aes(y=SkinThickness))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)
+
+
+ggarrange(g1, g2, g3 , g4,
+          ncol = 4, nrow = 1)
+
+g5<-ggplot(impute_diab2, aes(y=Insulin))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)
+
+g6<-ggplot(impute_diab2, aes(y=BMI))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)
+
+g7<-ggplot(impute_diab2, aes(y=Diab.Pedigree.Fun))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)
+
+g8<-ggplot(impute_diab2, aes(y=Age))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)
+
+ggarrange(g5, g6, g7 , g8,
+          ncol = 4, nrow = 1)
+```
+
+$\qquad$ After removing multivariate outliers, the box plots are more symmetrical. The observation in which the number of pregnancies was 17 has been deleted. The greatest improvement is seen in the distributions of the Insulin and Diab.Pedigree.Fun.
+
+
+```{r ,fig.align='center', echo=FALSE,message=FALSE, warning=FALSE}
+Diabetes<-factor(impute_diab2$Outcome)
+
+ggplot(impute_diab2,aes(x = Pregnancies,fill = Diabetes)) + 
+  geom_bar() + 
+  scale_color_brewer(palette = "Set2")+
+  labs(y="Count",title = "Pregnancies and Outcome")+
+  scale_fill_manual(values=c("#63cbf7","#f55858"))
+
+
+   
+
+ggplot(impute_diab2,aes(x = Age, fill = Diabetes)) + 
+  geom_histogram(binwidth = 5,color = "white")+
+  scale_fill_manual(values=c("#63cbf7","#f55858"))+
+    labs(y="Count",title = "Age Vs Outcome")
+
+ggplot(impute_diab2,aes(x = Insulin, fill = Diabetes)) + 
+  geom_histogram(color = "white")+
+  scale_fill_manual(values=c("#63cbf7","#f55858"))+
+    labs(y="Count",title = "Level of Insulin and Outcome")
+
+ggplot(impute_diab2,aes(x = Glucose, fill = Diabetes)) + 
+  geom_histogram(color = "white")+
+  scale_fill_manual(values=c("#63cbf7","#f55858"))+
+    labs(y="Count",title = "Level of Glucose and Outcome")
+
+ggplot(impute_diab2,aes(x = Diab.Pedigree.Fun, fill = Diabetes)) + 
+  geom_histogram(color = "white")+
+  scale_fill_manual(values=c("#63cbf7","#f55858"))+
+    labs(y="Count",title = "Diab.Pedigree.Fun and Outcome")
+
+ggplot(impute_diab2,aes(x = SkinThickness, fill = Diabetes)) + 
+  geom_histogram(color = "white")+
+  scale_fill_manual(values=c("#63cbf7","#f55858"))+
+    labs(y="Count",title = "SkinThickness and Outcome")
+
+ggplot(impute_diab2,aes(x= BloodPressure, fill = Diabetes)) + 
+  geom_histogram(color = "white")+
+  scale_fill_manual(values=c("#63cbf7","#f55858"))+
+    labs(y="Count",title = "Blood Pressure and Outcome")
+
+
+ggplot(impute_diab2,aes(x = BMI, fill=Diabetes)) + 
+  geom_histogram(color = "white")+
+  facet_grid(~Outcome)+
+  theme(legend.position="bottom")+
+  scale_fill_manual(values=c("#63cbf7","#f55858"))+
+  labs(y="Count",title = "How BMI Affects the Probability of Diabetes")
+
+ggplot(impute_diab2,aes(x = Age, y=BMI,color=Diabetes)) + 
+  geom_point()+
+  geom_smooth()+
+  theme(legend.position="bottom")+
+  scale_color_manual(values=c("#63cbf7","#f55858"))+
+  facet_grid(~Outcome)
+
+
+
+
+```
+
+## Division into training and test set (80/20)
+
+### Descriptive statistics of the training dataset
+
+```{r, echo=FALSE}
+impute_diab2$m_dist<-NULL
+diab<-impute_diab2
+set.seed(144)
+
+test<-sample(1:nrow(diab), round(nrow(diab)*0.3,0), replace=FALSE)
+test<-sort(test)
+
+x<-seq(1,nrow(diab),by=1)
+x<-x[!(x %in% test)]
+
+test<-diab[test,]
+train<-diab[x,]
+sum_train<-psych::describe(train)[,c(3,4,5,8,9,10,11,12)]
+colnames(sum_train)<-c("Average", "Standard Deviation", "Median", "Min", "Max", "Range", "Skewness", "Kurtosis")
+kable(sum_train,booktabs =T)%>%kable_styling(latex_options ="striped")
+
+```
+
+### Descriptive statistics of the test dataset
+
+```{r, echo=FALSE}
+sum_test<-psych::describe(test)[,c(3,4,5,8,9,10,11,12)]
+colnames(sum_test)<-c("Average", "Standard Deviation", "Median", "Min", "Max", "Range", "Skewness", "Kurtosis")
+kable(sum_test,booktabs =T)%>%kable_styling(latex_options ="striped")
+results<-data.frame()
+```
+
+### Comparison of the distributions of variables in the test and training dataset
+
+```{r,fig.align='center', echo=FALSE,message=FALSE, warning=FALSE}
+library(gridExtra)
+library(grid)
+library(lattice)
+g1<-ggplot(train, aes(y=Insulin))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)+
+  scale_y_continuous(limits=c(0,800))+
+  labs(title="Train", y=NULL)
+g2<-ggplot(test, aes(y=Insulin))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)+
+  scale_y_continuous(limits=c(0,800))+
+  labs(title="Test", y=NULL)
+
+grid.arrange(g1,g2, ncol=2, nrow=1, top="Insulin")
+
+g3<-ggplot(train, aes(y=Glucose))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)+
+  scale_y_continuous(limits=c(50,250))+
+  labs(title="Train", y=NULL)
+g4<-ggplot(test, aes(y=Glucose))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)+
+  scale_y_continuous(limits=c(50,250))+
+  labs(title="Test", y=NULL)
+grid.arrange(g1,g2, ncol=2, nrow=1, top="Glucose")
+
+g5<-ggplot(train, aes(y=Pregnancies))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)+
+  scale_y_continuous(limits=c(0,15))+
+  labs(title="Train", y=NULL)
+
+g6<-ggplot(test, aes(y=Pregnancies))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)+
+  scale_y_continuous(limits=c(0,15))+
+  labs(title="Test", y=NULL)
+grid.arrange(g5,g6, ncol=2, nrow=1, top="Pregnancies")
+
+g7<-ggplot(train, aes(y=BMI))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)+
+  scale_y_continuous(limits=c(15,55))+
+  labs(title="Train", y=NULL)
+
+g8<-ggplot(test, aes(y=BMI))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)+
+  scale_y_continuous(limits=c(15,55))+
+  labs(title="Test", y=NULL)
+grid.arrange(g7,g8, ncol=2, nrow=1, top="BMI")
+
+g9<-ggplot(train, aes(y=Age))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)+
+  scale_y_continuous(limits=c(20,70))+
+  labs(title="Train", y=NULL)
+
+g10<-ggplot(test, aes(y=Age))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)+
+  scale_y_continuous(limits=c(20,70))+
+  labs(title="Test", y=NULL)
+grid.arrange(g9,g10, ncol=2, nrow=1, top="Age")
+
+g11<-ggplot(train, aes(y=BloodPressure))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)+
+  scale_y_continuous(limits=c(20,110))+
+  labs(title="Train", y=NULL)
+
+g12<-ggplot(test, aes(y=BloodPressure))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)+
+  scale_y_continuous(limits=c(20,110))+
+  labs(title="Test", y=NULL)
+grid.arrange(g11,g12, ncol=2, nrow=1, top="Blood Pressure")
+
+g13<-ggplot(train, aes(y=SkinThickness))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)+
+  scale_y_continuous(limits=c(15,61))+
+  labs(title="Train", y=NULL)
+
+g14<-ggplot(test, aes(y=SkinThickness))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)+
+  scale_y_continuous(limits=c(15,61))+
+  labs(title="Test", y=NULL)
+grid.arrange(g13,g14, ncol=2, nrow=1, top="Skin Thickness")
+
+g15<-ggplot(train, aes(y=Diab.Pedigree.Fun))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)+
+  scale_y_continuous(limits=c(0,2))+
+  labs(title="Train", y=NULL)
+
+g16<-ggplot(test, aes(y=Diab.Pedigree.Fun))+
+  geom_boxplot()+
+  scale_x_continuous(breaks=NULL)+
+  scale_y_continuous(limits=c(0,2))+
+  labs(title="Test", y=NULL)
+grid.arrange(g15,g16, ncol=2, nrow=1, top="Diabetes Pedigree Function")
+
+test2<-test
+test2$Outcome<-factor(test$Outcome)
+
+train2<-train
+train2$Outcome<-factor(train$Outcome)
+
+
+g0<-ggplot(train2, aes(y=Outcome,fill=Outcome))+
+  geom_bar(width=0.7)+
+  labs(title="Train", y=NULL)+
+  coord_flip()+
+  theme(legend.position="none")
+
+g20<-ggplot(test2, aes(y=Outcome, fill=Outcome))+
+  geom_bar()+
+  labs(title="Test", y=NULL)+
+  coord_flip()
+
+grid.arrange(g0,g20, ncol=2, nrow=1, top="Outcome" )
+
+```
+
+$\qquad$ The distributions of the variables are similar in both sets. Variables from the training set usually take a slightly larger range, but this is due to the greater size of this set.
+
+
+
+$\qquad$ After the division, it should be checked whether the descriptive statistics in both subsets are similar. They are similar for this division. In the case of categorical variables, it should also be checked whether all the values ​​appear in the training set. Otherwise, some algorithms would not be able to cope with the classification.
+
+
+## Parameters Tuning
+
+### Decision Tree
+
+$\qquad$ It is a decision support tool and one of the most commonly used data analysis techniques. The tree consists of a root, branches and nodes. In this flowchart-like structure each internal node represents a test on an attribute, each branch represents the outcome of the test, and each leaf node represents a class label. The paths from root to leaf represent classification rules. 
+
+Decision trees are divided into:
+
+• Regression trees - the explained variable is continuous
+• Classification trees - the explained variable is discrete
+
+Benefits:
+
+* They are very clear and easy to interpret, the algorithm is similar to human decision making
+* They perform well with qualitative data, and data gaps are not a problem for them
+
+Defects:
+
+* Instability - with few data changes, the tree structure can change completely
+* Ability to parameterize - overfitting, then the effectiveness on the training set is very high, but on the test set it is much worse
+
+In R, the rpart () function from the package of the same name is used to create the tree.
+
+```{r ,fig.align='center',echo=FALSE, warning=FALSE, message=FALSE}
+drzewo <- rpart(Outcome ~., 
+                method = "class", 
+                data = train, 
+                control = rpart.control(cp = 0.0012))
+index       <- which.min(drzewo$cptable[ , "xerror"])
+CP          <- drzewo$cptable[index,"CP"]
+drzewo.final <- prune(drzewo ,cp = CP)
+rpart.plot(drzewo.final, uniform = T, cex = 0.68, under=TRUE)
+
+
+par(pty = "s")
+drzewo.t<- predict(drzewo.final, 
+                   newdata = test,  
+                   type = "class")
+drzewo.pr.t <- predict(drzewo.final, 
+                       newdata = test,  
+                       type = "prob")
+
+tab.drz.t  <- table(test$Outcome, drzewo.t)
+ACC.drz.t  <- sum(diag(tab.drz.t))/sum(tab.drz.t)
+ROC.drz.t  <- roc(test$Outcome, drzewo.pr.t[,1])
+AUC.drz.t  <- auc(ROC.drz.t)[1]
+plot(ROC.drz.t, main=paste0("ROC for Decision Tree for test dataset\nACC=",round(ACC.drz.t,4),"\n"),print.auc = TRUE, cex.main=0.8)
+
+a<-confusionMatrix(factor(drzewo.t), reference = factor(test$Outcome))
+results<-rbind(results, data.frame(Method = "Single decision tree", ACC=round(ACC.drz.t,3), AUC=round(AUC.drz.t,3)))
+
+```
+
+$\qquad$ It is easy to trace the decision-making process in the above tree. The first "question" the algorithm asks is about the level of glucose. If it is less than 133 units, the next question is about your insulin level. If the insulin level is lower than 110 units, a person is classified as healthy at 8%, there is a lot in this group, as much as 36% of the training set. If the insulin level is above 110 units, more questions are asked. The obtained decision tree takes into account all the variables, it is worth paying attention to the repeatedly asked questions about the level of glucose, which is the most differentiating variable, and the history of diabetes in the family.
+
+### Bagging
+
+$\qquad$Bagging is a method that avoids the disadvantage of a single tree, which is instability. It creates many decision trees and average the results. In order for the trees to differ from each other, a percentage of observations from the training set is selected, about 60-70%. Increasing the number of trees gives better and better results, but the increase in accuracy decreases.
+The parameters that can be manipulated are therefore the number of trees and the percentage of the test set. In the algorithm different values were tested to see when the accuracy would be highest.
+ 
+1) Testing a different number of trees - changing the "nbagg" parameter
+
+```{r ,fig.align='center',echo=FALSE, message=FALSE, warning=FALSE}
+wynik.acc = c()
+wynik.auc = c()
+for(i in 1:51){
+  ucz.bag <- bagging(Outcome ~., data = train, 
+                     nbagg = (i+9), coob = T)
+  bag.pr.t   <- predict(ucz.bag, newdata = test, 
+                        type = "prob")
+  prog.test = ifelse(bag.pr.t > 0.5, 1, 0)
+  mac.bag.t <- table(test$Outcome, prog.test)
+  wynik.acc[i] <- sum(diag(mac.bag.t))/sum(mac.bag.t)
+  ROC.bag.t <- roc(test$Outcome, prog.test)
+  wynik.auc[i] <- auc(ROC.bag.t)[1]}
+
+
+#plot(10:60,wynik.acc, type = "l",xlab= "Number of trees", ylab="ACC", main="Accuracy in Bagging for different number of trees")
+#plot(10:60,wynik.auc, type = "l",xlab= "Number of trees", ylab="AUC", main="AUC in Bagging for different number of trees")
+
+g1<-ggplot(NULL, aes(x=10:60, y=wynik.acc))+
+  geom_line()+
+  labs(x= "Number of trees", y="ACC", title="Accuracy in Bagging for different number of trees")
+
+g2<-ggplot(NULL, aes(x=10:60, y=wynik.auc))+
+  geom_line()+
+  labs(x= "Number of trees", y="AUC", title="AUC in Bagging for different number of trees")
+
+ggarrange(g1, g2, ncol = 1, nrow = 2)
+
+```
+
+
+$\qquad$  The area under the ROC curve and the accuracy increase with the increase in the number of trees in Bagging, so the highest values of both parameters were obtained for 60 trees. In this case, the differences are significant as the accuracy varies between 0.76 and 0.8. 
+
+2) Testing a different percentage of the training set to create each tree - changing the "ns" parameter
+
+```{r, fig.align='center',echo=FALSE, message=FALSE, warning=FALSE}
+wynik.acc = c()
+wynik.auc = c()
+j=1
+for(i in seq(from=0.4,to=0.8,by=0.05)){
+  
+  ucz.bag <- bagging(Outcome ~., data = train,
+                     nbagg = 30, coob = T,ns=i*nrow(train))
+  bag.pr.t   <- predict(ucz.bag, newdata = test,
+                        type = "prob")
+  prog.test = ifelse(bag.pr.t > 0.5, 1, 0)
+  mac.bag.t <- table(test$Outcome, prog.test)
+  wynik.acc[j] <- sum(diag(mac.bag.t))/sum(mac.bag.t)
+  ROC.bag.t <- roc(test$Outcome, prog.test)
+  wynik.auc[j] <- auc(ROC.bag.t)[1]
+  j=j+1
+}
+
+
+#plot(seq(from=0.4,to=0.8,by=0.05),wynik.acc, type = "l",xlab = "% of obserwations to estimate one tree",main="Accuracy in Bagging for different % of observation")
+#plot(seq(from=0.4,to=0.8,by=0.05),wynik.auc, type = "l",xlab = "% of obserwations to estimate one tree",main="AUC in Bagging for different % of observation")
+
+g1<-ggplot(NULL, aes(x=seq(from=0.4,to=0.8,by=0.05), y=wynik.acc))+
+  geom_line()+
+  labs(x= "% of obserwations to estimate one tree", y="ACC", title="Accuracy in Bagging for different % of observation")
+
+g2<-ggplot(NULL, aes(x=seq(from=0.4,to=0.8,by=0.05), y=wynik.auc))+
+  geom_line()+
+  labs(x= "% of obserwations to estimate one tree", y="AUC", title="AUC in Bagging for different % of observation")
+ggarrange(g1, g2, ncol = 1, nrow = 2)
+```
+
+$\qquad$ In this case, the highest accuracy and AUC were obtained for randomizing 55% of the observations from the training set. The differences in the obtained results are significant, which means that for this data set, the selection of a specific percent of the data to build each tree is important.
+
+3) Changing the number of trees and the "ns" parameter
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+wynik.acc<-array(0, dim=c(length(seq(from=0.4,to=0.8,by=0.05)),length(seq(from=1,to=51,by=5))))
+wynik.auc<-array(0, dim=c(length(seq(from=0.4,to=0.8,by=0.05)),length(seq(from=1,to=51,by=5))))
+tnum=1
+
+for(t in seq(from=1,to=51,by=5)){
+  j=1
+  for(i in seq(from=0.4,to=0.8,by=0.05)){
+    ucz.bag <- bagging(Outcome ~., data = train,
+                       nbagg = t+9, coob = T,ns=i*nrow(train))
+    bag.pr.t   <- predict(ucz.bag, newdata = test,
+                          type = "prob")
+    prog.test = ifelse(bag.pr.t > 0.5, 1, 0)
+    mac.bag.t <- table(test$Outcome, prog.test)
+    wynik.acc[j,tnum]<- sum(diag(mac.bag.t))/sum(mac.bag.t)
+    ROC.bag.t <- roc(test$Outcome, prog.test)
+    wynik.auc[j,tnum]<- auc(ROC.bag.t)[1]
+    j<-j+1
+    
+  }
+  tnum<-tnum+1
+}
+
+colnames(wynik.acc)<-c(as.character(seq(from=10,to=60,by=5)))
+rownames(wynik.acc)<-c(as.character(seq(from=0.4,to=0.8,by=0.05)))
+
+colnames(wynik.auc)<-colnames(wynik.acc)
+rownames(wynik.auc)<-rownames(wynik.acc)
+
+
+res<-which(wynik.acc == max(wynik.acc), arr.ind=TRUE)
+nbagg<-colnames(wynik.acc)[res[2]]
+nb<-rownames(wynik.acc)[res[1]]
+
+
+ddf<-data.frame(Method = paste0("Bagging number of trees =  ",nbagg,"  %obs = ",nb), ACC=round(max(wynik.acc),3),AUC=round(wynik.auc[nb,nbagg],3))
+ddf
+kable(ddf,booktabs =T)%>%kable_styling(latex_options ="striped")
+results<-rbind(results, data.frame(Method = paste0("Bagging nbagg = ",nbagg," nb = ",nb), ACC=round(max(wynik.acc),3), AUC=round(wynik.auc[nb,nbagg],3)))
+```
+
+$\qquad$ The best result after tuning the number of trees and nb parameter in bagging was obtained for 25 trees with 70% observations. Accuracy on the test dataset is 81.7%, and AUC equals 0.791.
+
+### KKNN The Weighted Nearest Neighbour Classifier
+
+$\qquad$ In this method, for each object, k of its closest neighbors are determined (according to Minkowski's distance), and then the result is determined based on the voice of the majority of these objects. The weight of votes depends on the distance of the neighbors from the selected object, the smaller it is, the higher the value of the vote. A different number of neighbors ranging from 3-50 will be tested.
+
+## ROC Curves for chosen number of neighbors in KKNN
+
+```{r, fig.align='center', echo=FALSE, message=FALSE, warning=FALSE}
+par(mfrow=c(2,2))
+res<-data.frame()
+for ( i in 3:50){
+  kknn_mod<-kknn(Outcome~.,train,test, k=i)
+  fit <- fitted(kknn_mod)
+  fit<-ifelse(fit>=0.5,1,0)
+  a<-confusionMatrix(factor(fit), reference = factor(test$Outcome))
+  par(pty = "s")
+  b<-FALSE
+  if(i %in% c(3,7,14,20,32,33,40,50)){b=TRUE}
+
+  roc1<-roc(fit,test$Outcome,plot = b,print.auc = TRUE, main=paste("ROC Curve KKNN Classifier k=",i,"\n ACC=",ACC=round(a$overall[1],3)))
+  if(i==32){
+    results<-rbind(results, data.frame(Method=paste0("KKNN(",i,")"), ACC=round(a$overall[1],3), AUC=round(auc(roc1),3)))
+  }
+  res<-rbind(res,data.frame("i"=i,ACC=round(a$overall[1],3), AUC=round(auc(roc1),3)))
+}
+
+g1<-ggplot(res, aes(x=i, y=ACC))+
+  geom_line()+
+  labs(x= "number of neighbors", y="ACC", title="Accuracy in KNN for different nr of neighbors")
+
+g2<-ggplot(res, aes(x=i, y=ACC))+
+  geom_line()+
+  labs(x= "number of neighbors", y="AUC", title="AUC in in KNN for different nr of neighbors")
+ggarrange(g1, g2, ncol = 1, nrow = 2)
+
+```
+
+The best results in the KKNN were obtained for 32 and 33 neighbors. The accuracy is then 0.795 and AUC = 0.779.
+
+### Naive Bayes Classifier
+
+$\qquad$ It is a method that answers the question of what is the probability that an object belongs to a given class as long as it has certain characteristics. In this case, what is the likelihood that a person has diabetes, given the age, glucose, and other health parameters of a person. This can be represented by the equation:
+
+$$P(C|X)=\frac{P(X|C)*P(C)}{P(X)}$$
+Where:
+
+* $P(C|X)$ is the posterior probability of class (target) given predictor (attribute)
+* $P(X|C)$ is the likelihood which is the probability of predictor given class
+* $P(C)$ is the prior probability of class
+* $P(X)$ is the prior probability of predictor
+
+The "naivety" of the classifier comes from the fact that it assumes the independence of the variables describing a given observation.
+
+```{r, ,fig.align='center', echo=FALSE, message=FALSE, warning=FALSE}
+train$Outcome<-factor(train$Outcome)
+nb<-naive_bayes(Outcome~.,data=train)
+p<-predict(nb,test)
+
+df<-data.frame(predict(nb,test))
+df<-cbind(df,factor(test$Outcome))
+colnames(df)<-c("NaiveBayes","Result")
+a<-confusionMatrix(df$NaiveBayes,reference = df$Result)
+print(a)
+
+par(pty = "s")
+roc1<-roc(p,test$Outcome,plot = TRUE,print.auc = TRUE, main=paste("ROC Curve Naive Bayes","\nACC=",round(a$overall[1],3)))
+results<-rbind(results, data.frame(Method="Naive Bayes", ACC=round(a$overall[1],3), AUC=round(auc(roc1),3)))
+```
+
+$\qquad$ Despite its "naivety", the classifier did quite well at predicting the values of the test dataset. The accuracy was 78.5% and the AUC equals 0.762.
+
+### Logit Model
+
+$\qquad$ The logit model is used to model data in which the variable being explained is a binary variable.
+In the logit model, the cumulative distribution function of the logistic function is used to transform the values into those from the interval (0,1), and in the probit model, the cumulative normal distribution function is used.
+These functions are similar to each other, with the logit function having thinner tails than the normal distribution.
+
+If $log(\frac{Y}{1-Y})=X\beta$, to $Y=\frac{e^{X\beta}}{1+e^{X\beta}}$
+
+Parameters could be interpreted using odds ratio:
+
+$\frac{p_{i}}{1-p_{i}}=e^{\beta_{0}+\beta_{1}x_{1,i}+...+\beta_{k}x_{k,i}}$
+
+If the value x1 had increased by a unit, then:
+
+$e^{\beta_{0}+\beta_{1}(x_{1,i}+1)+...+\beta_{k}x_{k,i}}=e^{\beta_{0}+\beta_{1}x_{1,i}+...+\beta_{k}x_{k,i}}e^{\beta_{1}}$
+
+So if x1 increases by a unit, the odds ratio will increase by $ e ^ {\ beta_ {1}} $, for $ e ^ {\ beta_ {1}} = $ 1.05, that is, it will increase by 5%.
+
+The positive sign of the parameter says that the increase of the variable increases the probability of the variable y assuming the value 1.
+(Negative sign: the increase of the variable increases the probability of the value 0).
+
+```{r, fig.align='center', echo=FALSE, message=FALSE, warning=FALSE}
+log_model<-glm(Outcome~.,data=train, family="binomial")
+summary(log_model)
+
+a<-confusionMatrix(factor(round(predict(log_model,newdata =  test, type="response"),0)), reference = factor(test$Outcome))
+print(a)
+par(pty = "s")
+roc1<-roc(factor(round(predict(log_model,newdata =  test, type="response"),0)),test$Outcome,plot = TRUE,print.auc = TRUE, main="ROC Curve Logistic regression")
+print(roc1)
+results<-rbind(results, data.frame(Method="Logistic regression", ACC=round(a$overall[1],3), AUC=round(auc(roc1),3)))
+```
+
+### Probit Model
+
+```{r,fig.align='center', echo=FALSE, message=FALSE, warning=FALSE}
+probit_model<-glm(Outcome~.,data=train, family=binomial(link="probit"))
+summary(probit_model)
+a<-confusionMatrix(factor(round(predict(probit_model,newdata =  test, type="response"),0)), reference = factor(test$Outcome))
+print(a)
+par(pty = "s")
+roc1<-roc(factor(round(predict(probit_model,newdata =  test, type="response"),0)),test$Outcome,plot = TRUE,print.auc = TRUE, main="ROC Curve Probit regression")
+print(roc1)
+results<-rbind(results, data.frame(Method="Probit regression", ACC=round(a$overall[1],3), AUC=round(auc(roc1),3)))
+```
+
+$\qquad$ Interestingly, according to the logit and probit models, the variables insulin, blood pressure, fold thickness and age are not significant. The final versions of the models with significant variables will be selected using backward stepwise approach.
+
+
+### Logit Model with significant variables
+
+```{r,fig.align='center',echo=FALSE, message=FALSE, warning=FALSE}
+log_model2<-glm(Outcome~Pregnancies+Glucose+BMI+Diab.Pedigree.Fun,data=train, family="binomial")
+summary(log_model2)
+
+a<-confusionMatrix(factor(round(predict(log_model2,newdata =  test, type="response"),0)), reference = factor(test$Outcome))
+print(a)
+par(pty = "s")
+roc1<-roc(factor(round(predict(log_model,newdata =  test, type="response"),0)),test$Outcome,plot = TRUE,print.auc = TRUE, main="ROC Curve Logistic regression")
+print(roc1)
+results<-rbind(results, data.frame(Method="Logistic regression-significant variables", ACC=round(a$overall[1],3), AUC=round(auc(roc1),3)))
+```
+
+### Probit Model with significant variables
+
+```{r,fig.align='center',echo=FALSE, message=FALSE, warning=FALSE}
+probit_model2<-glm(Outcome~Pregnancies+Glucose+BMI+Diab.Pedigree.Fun,data=train, family=binomial(link="probit"))
+summary(probit_model2)
+
+a<-confusionMatrix(factor(round(predict(probit_model2,newdata =  test, type="response"),0)), reference = factor(test$Outcome))
+print(a)
+par(pty = "s")
+roc1<-roc(factor(round(predict(probit_model,newdata =  test, type="response"),0)),test$Outcome,plot = TRUE,print.auc = TRUE, main="ROC Curve Probit regression")
+print(roc1)
+results<-rbind(results, data.frame(Method="Probit regression-significant variables", ACC=round(a$overall[1],3), AUC=round(auc(roc1),3)))
+```
+
+$\qquad$ All model parameters are positive, it was to be expected, as there is a positive correlation between them and the result.
+
+Interpretation of the parameters of the logit model on the example of a person who has had 3 pregnancies, has a glucose level of 200 units, BMI 30, and a family history of 0.8.
+
+$X = -5.783 + 3 \cdot 0.066 + 200 \cdot 0.023 + 30 \cdot 0.061 + 0,8 \cdot 0.612=1,335$
+
+$\frac{1}{1 + e^{-X}}=\frac{1}{1 +e^{-1,335}}=0.791$
+
+The probability that this theoretical person will have diabetes is 79.1%.
+
+### Random Forest
+
+$\qquad$ Random Forest is an extension of Bagging. The number of variables for the construction of each tree is additionally randomly selected, usually their number equals to a square root of the number of all variables. It avoids a situation in which only the most differentiating variables are used to build trees.
+After creating a forest, it is possible to check how differentiating individual variables are.
+
+ 
+```{r, fig.align='center',echo=FALSE, message=FALSE, warning=FALSE}
+j=1
+wynik.acc.forest<-c()
+wynik.auc.forest<-c()
+for (i in seq(10,100,by=5)){
+  r_forest<-randomForest(Outcome~., train, ntree=i, importance=TRUE)
+  r_forest
+  forest.pr.t<-predict(r_forest, newdata = test)
+  forest.pr.t<-data.frame(forest.pr.t)
+  forest.pr.t<-forest.pr.t$forest.pr.t
+  forest.pr.t<-as.numeric(forest.pr.t)
+  
+  mac.forest.t <- table(test$Outcome, forest.pr.t)
+  wynik.acc.forest[j]<- sum(diag(mac.forest.t))/sum(mac.forest.t)
+  ROC.forest.t<- roc(test$Outcome, forest.pr.t)
+  wynik.auc.forest[j]<- auc(ROC.forest.t)[1]
+  j=j+1
+}
+
+
+#plot(x=as.character(seq(10, 100, by=5)),wynik.acc.forest, type = "l",xlab = "Number of trees",ylab="ACC",main="Accuracy in random forest for different number of trees",lwd=2)
+
+#plot(x=as.character(seq(10, 100, by=5)),wynik.auc.forest, type = "l",xlab= "Number of trees",ylab="AUC",main="AUC in random forest for different number of trees",lwd=2)
+
+g1<-ggplot(NULL, aes(x=seq(10, 100, by=5), y=wynik.acc.forest))+
+  geom_line()+
+  labs(x= "Number of trees", y="ACC", title="Accuracy in random forest for different number of trees")
+
+g2<-ggplot(NULL, aes(x=seq(10, 100, by=5), y=wynik.auc.forest))+
+  geom_line()+
+  labs(x= "Number of trees", y="AUC", title="AUC in random forest for different number of trees")
+ggarrange(g1, g2, ncol = 1, nrow = 2)
+
+
+
+#Dodanie wyników lasu do tabeli
+
+df_forest_acc<-data.frame( seq(10,100,by=5),wynik.acc.forest)
+colnames(df_forest_acc)<-c("NrTrees","ACC")
+df_forest_auc<-data.frame( seq(10,100,by=5),wynik.auc.forest)
+colnames(df_forest_auc)<-c("NrTrees","AUC")
+
+res1<-df_forest_acc[which.max(df_forest_acc$ACC),]
+res2<-df_forest_auc[which.max(df_forest_acc$ACC),]
+
+results<-rbind(results, data.frame(Method=paste("Random Forest", res1$NrTrees,"Trees"), ACC=round(res1$ACC,3), AUC=round(res2$AUC,3)))
+```
+
+### Differentiating variables in a random forest
+
+```{r,fig.align='center',echo=FALSE, message=FALSE, warning=FALSE}
+r_forest<-randomForest(Outcome~., train, ntree=100, importance=TRUE)
+
+important <- importance(r_forest, type=1) 
+
+Important_Features <- data.frame(Feature = row.names(important)
+                                 ,Importance = important[, 1])
+Important_Features$Importance<-Important_Features$Importance/sum(Important_Features$Importance)
+plot_ <- ggplot(Important_Features, 
+                aes(x= reorder(Feature, Importance) , y = Importance) ) +
+  geom_bar(stat = "identity", 
+           fill = "#121088") +
+  coord_flip() +
+  theme_light(base_size = 17)+
+  xlab(NULL)+
+  ylab(NULL)+
+  ggtitle("Percentage impact of variables on the probability \n of developing Diabetes in the Random Forest (100 trees)") +
+  theme(plot.title = element_text(size=12))
+plot_
+```
+
+## Local-diagnostics Plots
+
+$\qquad$ For a random forest with a hundred trees, for 3 selected characteristic observations, I will check how the change in the values of individual variables (ceteris paribus) will affect the probability of disease.
+
+
+```{r,fig.align='center', echo=FALSE, message=FALSE, warning=FALSE}
+Daksha<-train%>%
+  filter(Pregnancies==8)%>%
+  filter(Age==43& BloodPressure==78)
+
+
+Sailaja<-diab[4,]
+Krisha<-train%>%
+  filter(Glucose==100)%>%
+  filter(BloodPressure==66)%>%
+  filter(Age==28)
+
+
+explain_rf <- DALEX::explain(model = r_forest,  
+                             data = train[,-9],
+                             y = train$Outcome=="1", 
+                             label = "Random Forest")
+```
+
+### Daksha
+
+```{r,echo=FALSE, message=FALSE, warning=FALSE}
+kable(Daksha,booktabs =T)%>%kable_styling(latex_options ="striped")
+predict(explain_rf, Daksha)
+```
+
+$\qquad$ Daksha is a 43-year-old woman who has been pregnant 8 times and has a fairly high level of glucose and insulin. According to the Random Forest, the probability of diabetes is 89% and she has actually been diagnosed with diabetes.
+
+```{r,fig.align='center', echo=FALSE, message=FALSE, warning=FALSE}
+
+cnames<-colnames(train)[-9]
+
+id_rf_Daksha <- predict_diagnostics(explainer = explain_rf,
+                                 new_observation = Daksha,
+                                 neighbors = 1,
+                                 variables = cnames)
+plot(id_rf_Daksha)
+```
+
+
+$\qquad$ The graphs depict that if Daksha reduce her glucose levels by as much as 40 units, the probability of her disease would drop to about 60%. She could also reduce the likelihood of illness by reducing her insulin levels. With sufficiently low insulin levels and the same values of other variables, she would be 55% likely to develop diabetes.
+
+### Sailaja
+
+```{r, echo=FALSE}
+kable(Sailaja,booktabs =T)%>%kable_styling(latex_options ="striped")
+predict(explain_rf, Sailaja)
+```
+
+$\qquad$ Sailaja is only 21 years old and has very low insulin, glucose and blood pressure values. The probability that such a person will have diabetes is only about 1% according to Random Forest.
+ 
+```{r,fig.align='center', echo=FALSE, message=FALSE, warning=FALSE}
+id_rf_Sailaja <- predict_diagnostics(explainer = explain_rf,
+                                 new_observation = Sailaja,
+                                 neighbors = 1,
+                                 variables = cnames)
+plot(id_rf_Sailaja)
+```
+
+$\qquad$ In this case, it can be observed that if Sailaja's glucose levels rose above about 160 units, the chance of diabetes would increase to 35% from the initial percentage. On the other hand, with large increases in other variables, but with low glucose levels, this probability increases to a maximum of 20%.
+.
+
+### Krisha
+
+```{r,fig.align='center', echo=FALSE, message=FALSE, warning=FALSE}
+kable(Krisha,booktabs =T)%>%kable_styling(latex_options ="striped")
+predict(explain_rf, Krisha)
+```
+$\qquad$ Krisha has low blood glucose and insulin levels, but her DiabetesPedigreeFunction index is high, which means that her family has a history of diabetes and may have a genetic predisposition for it. Her body mass index is also above normal, values in the range 30.0 - 34.99 are classified as the 1st degree of obesity. According to a random forest with 100 trees, Krisha has a 60% chance of diabetes.
+
+
+```{r,fig.align='center', echo=FALSE, message=FALSE, warning=FALSE}
+id_rf_Krisha <- predict_diagnostics(explainer = explain_rf,
+                                 new_observation = Krisha,
+                                 neighbors = 1,
+                                 variables = cnames)
+plot(id_rf_Krisha)
+```
+$\qquad$ The charts show a large influence of family history and BMI on the result. The variable she has influence on is the body mass index, if its value fell to normal (25 units), the probability of diabetes would decrease to 25%.
+
+## Summary and Conclusions
+
+```{r,fig.align='center', echo=FALSE, message=FALSE, warning=FALSE}
+rownames(results)<-NULL
+kable(results,booktabs =T)%>%kable_styling(latex_options ="striped")
+results<-results%>%
+  arrange(desc(ACC))
+results$ACC<-as.numeric(results$ACC)
+
+ggplot(results, aes(x=Method, y=ACC)) +
+  geom_bar(stat = "identity",fill="#2176d1")+
+  theme(axis.text.x=element_text(size=8, angle=90))+
+  coord_cartesian(ylim=c(0.65,0.85))+
+  geom_text(aes(label=ACC), size=5, vjust=-0.25)+
+  labs(x="Method", title="Best accuracy for each method on test data set")
+
+ggplot(results, aes(Method, y=AUC)) +
+  geom_bar(stat = "identity", fill="#2176d1")+
+  theme(axis.text.x=element_text(size=8, angle=90))+
+  coord_cartesian(ylim=c(0.65,0.85))+
+  geom_text(aes(label=AUC), size=5, vjust=-0.25)+
+  labs(x="Method", title="Best AUC for each method on test data set")
+
+```
+
+* The best accuracy and simultaneously AUC value were obtained for Bagging with 25 trees and 70% observations for a single tree creation.
+* In Bagging, the manipulation of parameters significantly influenced the achieved accuracy, unlike, for example, in the Adult dataset, where a change in the number of trees or the nb parameter caused a change in accuracy by parts of a thousand.
+* Overall, decision tree extensions that are Bagging and Random Forest did the best, followed by the Weighted Nearest Neighbor Method
+* A single decision tree performed the worst in the test data set, but even the result of accuracy = 74.4% is not very weak.
+* The insignificance of insulin level and age in probit and logit models turned out to be interesting, taking into account that in the random forest these variables turned out to be relatively strongly differentiating.
+* An interesting relationship was observed in the KKNN algorithm. The selection of 32 neighbors turned out to be the most effective in the test set, which is quite a high parameter value for this algorithm.
+
+ 
+$\qquad$ The obtained results can be considered as satisfactory. Due to the simultaneous manipulation of parameters, the Bagging achieves the highest accuracy. The study was conducted on data from a fairly specific group of people, but probably for a different set of data, equally good results would be obtained. If the new set also included men, the number of past pregnancies should be disregarded when predicting their diabetes. It would be justified to divide the new subset by sex also due to other norms of health parameters, such as glucose or BMI.
+
+
+
+
+
